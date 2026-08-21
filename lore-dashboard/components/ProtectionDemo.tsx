@@ -1,0 +1,48 @@
+"use client";
+
+import {useState} from "react";
+import {ShieldCheck} from "lucide-react";
+import {postDemo} from "../lib/api";
+import type {ProtectionResponse} from "../lib/types";
+import {ProtectionDiff} from "./ProtectionDiff";
+
+const sample = `Requester: Ada Lovelace
+Email: ada@example.com
+Account id: ACCT-778899
+Debug token: debug_token sk-live-demo-secret
+
+Please add this customer exception to the retry policy memory.`;
+
+export function ProtectionDemo() {
+  const [text, setText] = useState(sample);
+  const [result, setResult] = useState<ProtectionResponse | null>(null);
+  const [loading, setLoading] = useState(false);
+
+  async function run() {
+    setLoading(true);
+    try {
+      setResult(await postDemo("/api/demo/protect", text));
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  return (
+    <div className="space-y-4">
+      <textarea className="min-h-48 w-full border border-line bg-white p-4 font-mono text-sm outline-none focus:border-teal" value={text} onChange={(event) => setText(event.target.value)} />
+      <button onClick={run} disabled={loading} className="inline-flex items-center gap-2 bg-teal px-4 py-2 text-sm font-semibold text-white disabled:opacity-60">
+        <ShieldCheck className="h-4 w-4" aria-hidden />
+        {loading ? "Protecting" : "Run Protection"}
+      </button>
+      <ProtectionDiff input={text} output={result?.text || ""} />
+      {result ? (
+        <div className="border border-line bg-white p-4">
+          <div className="text-sm font-semibold text-ink">Categories</div>
+          <div className="mt-3 flex flex-wrap gap-2">
+            {result.categories.map((category) => <span key={category} className="bg-panel px-2 py-1 text-xs text-slate-700">{category}</span>)}
+          </div>
+        </div>
+      ) : null}
+    </div>
+  );
+}
