@@ -5,12 +5,12 @@ const config: Config = {
   theme: {
     extend: {
       colors: {
-        ink: "#111827",
-        panel: "#f7f8fa",
-        line: "#d9dee7",
-        teal: "#0f766e",
-        amber: "#b45309",
-        rose: "#be123c"
+        ink: "#f4f4f5",
+        panel: "#171717",
+        line: "#303030",
+        teal: "#2dd4bf",
+        amber: "#fbbf24",
+        rose: "#fb7185"
       }
     }
   },

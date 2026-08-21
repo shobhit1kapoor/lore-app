@@ -9,7 +9,7 @@ export default async function TraceDetailPage({params}: {params: {id: string}}) 
       <div className="space-y-6">
         <div>
           <h1 className="break-all text-2xl font-semibold text-ink">{params.id}</h1>
-          <p className="mt-1 text-sm text-slate-600">Ordered protection and agent timeline.</p>
+          <p className="mt-1 text-sm text-zinc-400">Ordered protection and agent timeline.</p>
         </div>
         <TraceTimeline events={trace.events} />
       </div>

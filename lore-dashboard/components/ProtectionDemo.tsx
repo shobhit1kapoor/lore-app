@@ -29,17 +29,17 @@ export function ProtectionDemo() {
 
   return (
     <div className="space-y-4">
-      <textarea className="min-h-48 w-full border border-line bg-white p-4 font-mono text-sm outline-none focus:border-teal" value={text} onChange={(event) => setText(event.target.value)} />
+      <textarea className="min-h-48 w-full border border-line bg-[#111111] p-4 font-mono text-sm text-zinc-100 outline-none placeholder:text-zinc-600 focus:border-teal" value={text} onChange={(event) => setText(event.target.value)} />
       <button onClick={run} disabled={loading} className="inline-flex items-center gap-2 bg-teal px-4 py-2 text-sm font-semibold text-white disabled:opacity-60">
         <ShieldCheck className="h-4 w-4" aria-hidden />
         {loading ? "Protecting" : "Run Protection"}
       </button>
       <ProtectionDiff input={text} output={result?.text || ""} />
       {result ? (
-        <div className="border border-line bg-white p-4">
+        <div className="border border-line bg-[#111111] p-4">
           <div className="text-sm font-semibold text-ink">Categories</div>
           <div className="mt-3 flex flex-wrap gap-2">
-            {result.categories.map((category) => <span key={category} className="bg-panel px-2 py-1 text-xs text-slate-700">{category}</span>)}
+            {result.categories.map((category) => <span key={category} className="bg-panel px-2 py-1 text-xs text-zinc-300">{category}</span>)}
           </div>
         </div>
       ) : null}

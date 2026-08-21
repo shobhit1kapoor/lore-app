@@ -7,7 +7,7 @@ export default function ProtectionPage() {
       <div className="space-y-6">
         <div>
           <h1 className="text-2xl font-semibold text-ink">Protection Lab</h1>
-          <p className="mt-1 text-sm text-slate-600">Run Data Discovery-style classification, tokenization, and masking against MR text before it reaches Claude or memory.</p>
+          <p className="mt-1 text-sm text-zinc-400">Run data discovery, tokenization, and masking against text before it reaches the AI model or memory.</p>
         </div>
         <ProtectionDemo />
       </div>

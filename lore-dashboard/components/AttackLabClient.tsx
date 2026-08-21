@@ -24,21 +24,21 @@ export function AttackLabClient() {
 
   return (
     <div className="space-y-4">
-      <textarea className="min-h-44 w-full border border-line bg-white p-4 font-mono text-sm outline-none focus:border-rose" value={text} onChange={(event) => setText(event.target.value)} />
+      <textarea className="min-h-44 w-full border border-line bg-[#111111] p-4 font-mono text-sm text-zinc-100 outline-none placeholder:text-zinc-600 focus:border-rose" value={text} onChange={(event) => setText(event.target.value)} />
       <button onClick={run} disabled={loading} className="inline-flex items-center gap-2 bg-rose px-4 py-2 text-sm font-semibold text-white disabled:opacity-60">
         <FlaskConical className="h-4 w-4" aria-hidden />
         {loading ? "Testing" : "Run Attack Probe"}
       </button>
       {result ? (
-        <div className="border border-line bg-white p-4">
+        <div className="border border-line bg-[#111111] p-4">
           <div className="flex items-center justify-between gap-3">
             <div>
               <div className="font-semibold text-ink">Policy Result</div>
-              <div className="mt-1 text-sm text-slate-600">{result.reason || "Assessed by guardrails."}</div>
+              <div className="mt-1 text-sm text-zinc-400">{result.reason || "Assessed by guardrails."}</div>
             </div>
             <RiskBadge blocked={result.blocked} score={result.risk_score} />
           </div>
-          <pre className="mt-4 whitespace-pre-wrap bg-panel p-4 text-sm text-slate-800">{result.text}</pre>
+          <pre className="mt-4 whitespace-pre-wrap bg-panel p-4 text-sm text-zinc-200">{result.text}</pre>
         </div>
       ) : null}
     </div>

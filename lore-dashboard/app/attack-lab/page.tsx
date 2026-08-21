@@ -7,7 +7,7 @@ export default function AttackLabPage() {
       <div className="space-y-6">
         <div>
           <h1 className="text-2xl font-semibold text-ink">Attack Lab</h1>
-          <p className="mt-1 text-sm text-slate-600">Probe semantic guardrails with prompt-injection and memory-exfiltration attempts.</p>
+          <p className="mt-1 text-sm text-zinc-400">Probe guardrails with prompt-injection and memory-exfiltration attempts.</p>
         </div>
         <AttackLabClient />
       </div>
