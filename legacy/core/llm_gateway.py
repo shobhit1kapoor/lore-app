@@ -11,11 +11,15 @@ import logging
 from pathlib import Path
 import time
 
+import httpx
+
 from config import (
     ANTHROPIC_API_KEY,
+    AI_API_KEY,
+    AI_BASE_URL,
     CLAUDE_MAX_TOKENS,
-    CLAUDE_MODEL,
     CLAUDE_TEMPERATURE,
+    LLM_MODEL,
 )
 from .protection import ProtectionBlocked, ProtectionGateway, get_default_protection_gateway
 from .telemetry import EventType, TelemetryRecorder, get_default_recorder, new_trace_id
@@ -40,10 +44,18 @@ class LLMGateway:
             self._client = client
             self._api_error_types: tuple[type[BaseException], ...] = ()
         else:
-            import anthropic
+            if AI_BASE_URL and AI_API_KEY and LLM_MODEL:
+                self._provider = "openai_compatible"
+                self._client = httpx.Client(timeout=30.0)
+                self._api_error_types = (httpx.HTTPError,)
+            else:
+                import anthropic
 
-            self._client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
-            self._api_error_types = (anthropic.APIError,)
+                self._provider = "anthropic"
+                self._client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+                self._api_error_types = (anthropic.APIError,)
+        if client is not None:
+            self._provider = "injected"
 
     def call(
         self,
@@ -72,11 +84,11 @@ class LLMGateway:
                 agent_id=agent_id,
                 agent_name=agent_name,
                 source="lore_agent",
-                destination="anthropic",
-                resource=CLAUDE_MODEL,
+                destination=self._provider,
+                resource=LLM_MODEL,
                 metadata={"error_type": type(e).__name__},
             )
-            raise RuntimeError(f"Claude API call blocked by protection policy: {e}") from e
+            raise RuntimeError(f"LLM API call blocked by protection policy: {e}") from e
 
         self.telemetry.emit(
             EventType.LLM_CALLED,
@@ -84,8 +96,8 @@ class LLMGateway:
             agent_id=agent_id,
             agent_name=agent_name,
             source="lore_agent",
-            destination="anthropic",
-            resource=CLAUDE_MODEL,
+            destination=self._provider,
+            resource=LLM_MODEL,
             metadata={
                 "system_prompt_chars": len(system_prompt),
                 "user_message_chars": len(user_message),
@@ -98,19 +110,40 @@ class LLMGateway:
         )
         started = time.perf_counter()
         try:
-            response = self._client.messages.create(
-                model=CLAUDE_MODEL,
-                max_tokens=tokens,
-                system=protected_system,
-                messages=[{"role": "user", "content": protected_user}],
-                temperature=temp,
-            )
-            latency_ms = int((time.perf_counter() - started) * 1000)
-            if not response.content:
-                text = ""
+            if self._provider == "openai_compatible":
+                response = self._client.post(
+                    f"{AI_BASE_URL.rstrip('/')}/chat/completions",
+                    headers={"Authorization": f"Bearer {AI_API_KEY}"},
+                    json={
+                        "model": LLM_MODEL,
+                        "max_tokens": tokens,
+                        "temperature": temp,
+                        "messages": [
+                            {"role": "system", "content": protected_system},
+                            {"role": "user", "content": protected_user},
+                        ],
+                    },
+                )
+                response.raise_for_status()
+                payload = response.json()
+                choices = payload.get("choices", [])
+                if not choices:
+                    raise RuntimeError("OpenAI-compatible API returned no choices")
+                text = str(choices[0]["message"].get("content") or "")
             else:
-                first = response.content[0]
-                text = first.text if hasattr(first, "text") else str(first)
+                response = self._client.messages.create(
+                    model=LLM_MODEL,
+                    max_tokens=tokens,
+                    system=protected_system,
+                    messages=[{"role": "user", "content": protected_user}],
+                    temperature=temp,
+                )
+                if not response.content:
+                    text = ""
+                else:
+                    first = response.content[0]
+                    text = first.text if hasattr(first, "text") else str(first)
+            latency_ms = int((time.perf_counter() - started) * 1000)
             text = self.protection.check_output(
                 text,
                 {"boundary": "pre_output", "destination": "agent", "trace_id": self.trace_id},
@@ -120,9 +153,9 @@ class LLMGateway:
                 self.trace_id,
                 agent_id=agent_id,
                 agent_name=agent_name,
-                source="anthropic",
+                source=self._provider,
                 destination="lore_agent",
-                resource=CLAUDE_MODEL,
+                resource=LLM_MODEL,
                 latency_ms=latency_ms,
                 metadata={"response_chars": len(text)},
             )
@@ -135,13 +168,13 @@ class LLMGateway:
                 agent_id=agent_id,
                 agent_name=agent_name,
                 source="lore_agent",
-                destination="anthropic",
-                resource=CLAUDE_MODEL,
+                destination=self._provider,
+                resource=LLM_MODEL,
                 latency_ms=latency_ms,
                 metadata={"error_type": type(e).__name__},
             )
-            logger.exception("Claude API error")
-            raise RuntimeError(f"Claude API call failed: {e}") from e
+            logger.exception("LLM API error")
+            raise RuntimeError(f"LLM API call failed: {e}") from e
         except Exception as e:
             latency_ms = int((time.perf_counter() - started) * 1000)
             self.telemetry.emit(
@@ -150,13 +183,13 @@ class LLMGateway:
                 agent_id=agent_id,
                 agent_name=agent_name,
                 source="lore_agent",
-                destination="anthropic",
-                resource=CLAUDE_MODEL,
+                destination=self._provider,
+                resource=LLM_MODEL,
                 latency_ms=latency_ms,
                 metadata={"error_type": type(e).__name__},
             )
-            logger.exception("Unexpected error calling Claude")
-            raise RuntimeError(f"Claude API call failed: {e}") from e
+            logger.exception("Unexpected error calling LLM")
+            raise RuntimeError(f"LLM API call failed: {e}") from e
 
     def load_prompt(self, prompt_name: str) -> str:
         path = Path(__file__).resolve().parent.parent / "prompts" / f"{prompt_name}.txt"

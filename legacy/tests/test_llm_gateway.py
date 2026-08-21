@@ -1,6 +1,7 @@
 import os
 import sys
 from types import SimpleNamespace
+from unittest.mock import Mock
 
 os.environ.setdefault("GITLAB_TOKEN", "test-token")
 os.environ.setdefault("GITLAB_PROJECT_ID", "1")
@@ -53,3 +54,22 @@ def test_llm_gateway_uses_client_and_emits_events():
     assert {event["trace_id"] for event in sink.events} == {trace_id}
     assert sink.events[0]["metadata"]["user_message_chars"] == 4
     assert "user" not in sink.events[0]["metadata"]
+
+
+def test_llm_gateway_supports_openai_compatible_responses(monkeypatch):
+    import core.llm_gateway as gateway_module
+
+    monkeypatch.setattr(gateway_module, "AI_BASE_URL", "https://example.test/v1")
+    monkeypatch.setattr(gateway_module, "AI_API_KEY", "test-key")
+    monkeypatch.setattr(gateway_module, "LLM_MODEL", "openai/gpt-oss-120b")
+    response = Mock()
+    response.json.return_value = {"choices": [{"message": {"content": "ready"}}]}
+    response.raise_for_status.return_value = None
+    client = Mock()
+    client.post.return_value = response
+
+    gateway = LLMGateway(client=client)
+    gateway._provider = "openai_compatible"
+
+    assert gateway.call("system", "user") == "ready"
+    assert client.post.call_args.kwargs["json"]["model"] == "openai/gpt-oss-120b"
