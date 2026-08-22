@@ -16,6 +16,7 @@ import re
 from typing import Any, Protocol
 from urllib import request
 from urllib.error import URLError
+from urllib.parse import urlencode
 
 from .models import MemoryRecord
 from .telemetry import EventType, TelemetryRecorder, get_default_recorder, new_trace_id
@@ -178,7 +179,7 @@ class FallbackSensitiveDataEngine:
 
 
 class ProtegrityDiscoveryClient:
-    """Best-effort Data Discovery client for Developer Edition style endpoints."""
+    """Client for the local Protegrity Data Discovery text-classification API."""
 
     def __init__(self, base_url: str | None = None, api_key: str | None = None, timeout_seconds: float = 2.0) -> None:
         self.base_url = (base_url or os.environ.get("PROTEGRITY_DISCOVERY_URL") or "").rstrip("/")
@@ -195,16 +196,44 @@ class ProtegrityDiscoveryClient:
         url = self.base_url
         if not url.endswith("/classify/text"):
             url = f"{url}/pty/data-discovery/v2/classify/text"
-        body = json.dumps({"text": text}).encode("utf-8")
-        headers = {"content-type": "application/json"}
-        if self.api_key:
-            headers["authorization"] = f"Bearer {self.api_key}"
+        separator = "&" if "?" in url else "?"
+        url = f"{url}{separator}{urlencode({'score_threshold': '0.6'})}"
+        body = text.encode("utf-8")
+        headers = {"content-type": "text/plain"}
         req = request.Request(url, data=body, headers=headers, method="POST")
         with request.urlopen(req, timeout=self.timeout_seconds) as response:
             payload = json.loads(response.read().decode("utf-8"))
         return self._parse_findings(payload, text)
 
     def _parse_findings(self, payload: Any, text: str) -> list[SensitiveFinding]:
+        if isinstance(payload, dict) and isinstance(payload.get("classifications"), dict):
+            findings: list[SensitiveFinding] = []
+            for category, matches in payload["classifications"].items():
+                if not isinstance(matches, list):
+                    continue
+                for match in matches:
+                    if not isinstance(match, dict):
+                        continue
+                    location = match.get("location")
+                    if not isinstance(location, dict):
+                        continue
+                    start = location.get("start_index")
+                    end = location.get("end_index")
+                    if start is None or end is None:
+                        continue
+                    normalized = str(category).upper()
+                    action = "mask" if normalized in {"API_KEY", "PASSWORD", "SECRET", "TOKEN", "DEBUG_TOKEN"} else "tokenize"
+                    findings.append(
+                        SensitiveFinding(
+                            category=normalized,
+                            start=int(start),
+                            end=int(end),
+                            confidence=float(match.get("score", 0.9)),
+                            action=action,
+                        )
+                    )
+            return findings
+
         candidates: list[Any]
         if isinstance(payload, dict):
             candidates = (
@@ -246,7 +275,7 @@ class ProtegrityDiscoveryClient:
 
 
 class SemanticGuardrailClient:
-    """Best-effort Semantic Guardrails client with local fallback policy."""
+    """Protegrity Semantic Guardrails client with a deterministic local fallback."""
 
     _LOCAL_BLOCK_PATTERNS: tuple[re.Pattern[str], ...] = (
         re.compile(r"ignore (all )?(previous|prior|system) instructions", re.I),
@@ -272,13 +301,32 @@ class SemanticGuardrailClient:
         return True, 0.05, "Allowed by local guardrail policy."
 
     def _assess_remote(self, text: str, context: dict[str, Any] | None = None) -> tuple[bool, float, str]:
-        body = json.dumps({"text": text, "context": context or {}}).encode("utf-8")
+        body = json.dumps(
+            {
+                "messages": [
+                    {
+                        "from": "user",
+                        "to": "ai",
+                        "content": text,
+                        "processors": ["customer-support"],
+                    }
+                ]
+            }
+        ).encode("utf-8")
         headers = {"content-type": "application/json"}
-        if self.api_key:
-            headers["authorization"] = f"Bearer {self.api_key}"
         req = request.Request(self.base_url, data=body, headers=headers, method="POST")
         with request.urlopen(req, timeout=self.timeout_seconds) as response:
             payload = json.loads(response.read().decode("utf-8"))
+        batch = payload.get("batch") if isinstance(payload, dict) else None
+        if isinstance(batch, dict):
+            outcome = str(batch.get("outcome", "")).lower()
+            allowed = outcome not in {"rejected", "blocked", "denied"}
+            risk_score = float(batch.get("score", 0.0))
+            messages = payload.get("messages", [])
+            processors = messages[0].get("processors", []) if messages and isinstance(messages[0], dict) else []
+            explanation = processors[0].get("explanation") if processors and isinstance(processors[0], dict) else None
+            reason = str(explanation or outcome or "Assessed by Protegrity Semantic Guardrails.")
+            return allowed, risk_score, reason
         allowed = bool(payload.get("allowed", payload.get("allow", not payload.get("blocked", False))))
         risk_score = float(payload.get("risk_score", payload.get("riskScore", 0.0)))
         reason = str(payload.get("reason", payload.get("message", "Assessed by remote guardrail.")))
