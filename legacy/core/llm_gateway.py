@@ -17,6 +17,7 @@ from config import (
     ANTHROPIC_API_KEY,
     AI_API_KEY,
     AI_BASE_URL,
+    AI_FALLBACK_MODEL,
     CLAUDE_MAX_TOKENS,
     CLAUDE_TEMPERATURE,
     LLM_MODEL,
@@ -111,20 +112,27 @@ class LLMGateway:
         started = time.perf_counter()
         try:
             if self._provider == "openai_compatible":
-                response = self._client.post(
-                    f"{AI_BASE_URL.rstrip('/')}/chat/completions",
-                    headers={"Authorization": f"Bearer {AI_API_KEY}"},
-                    json={
-                        "model": LLM_MODEL,
-                        "max_tokens": tokens,
-                        "temperature": temp,
-                        "messages": [
-                            {"role": "system", "content": protected_system},
-                            {"role": "user", "content": protected_user},
-                        ],
-                    },
-                )
-                response.raise_for_status()
+                model_candidates = list(dict.fromkeys(filter(None, [LLM_MODEL, AI_FALLBACK_MODEL])))
+                selected_model = model_candidates[0]
+                for index, candidate in enumerate(model_candidates):
+                    response = self._client.post(
+                        f"{AI_BASE_URL.rstrip('/')}/chat/completions",
+                        headers={"Authorization": f"Bearer {AI_API_KEY}"},
+                        json={
+                            "model": candidate,
+                            "max_tokens": tokens,
+                            "temperature": temp,
+                            "messages": [
+                                {"role": "system", "content": protected_system},
+                                {"role": "user", "content": protected_user},
+                            ],
+                        },
+                    )
+                    if response.status_code == 404 and index + 1 < len(model_candidates):
+                        continue
+                    response.raise_for_status()
+                    selected_model = candidate
+                    break
                 payload = response.json()
                 choices = payload.get("choices", [])
                 if not choices:
@@ -155,7 +163,7 @@ class LLMGateway:
                 agent_name=agent_name,
                 source=self._provider,
                 destination="lore_agent",
-                resource=LLM_MODEL,
+                resource=selected_model if self._provider == "openai_compatible" else LLM_MODEL,
                 latency_ms=latency_ms,
                 metadata={"response_chars": len(text)},
             )

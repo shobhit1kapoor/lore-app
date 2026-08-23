@@ -5,7 +5,8 @@
   "scripts": {
     "dev": "next dev",
     "build": "next build",
-    "lint": "next lint"
+    "start": "next start",
+    "lint": "tsc --noEmit"
   },
   "dependencies": {
     "@carbon/icons-react": "^11.86.0",

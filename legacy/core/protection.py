@@ -182,7 +182,8 @@ class ProtegrityDiscoveryClient:
     """Client for the local Protegrity Data Discovery text-classification API."""
 
     def __init__(self, base_url: str | None = None, api_key: str | None = None, timeout_seconds: float = 2.0) -> None:
-        self.base_url = (base_url or os.environ.get("PROTEGRITY_DISCOVERY_URL") or "").rstrip("/")
+        configured_url = os.environ.get("PROTEGRITY_DISCOVERY_URL") if base_url is None else base_url
+        self.base_url = (configured_url or "").rstrip("/")
         self.api_key = api_key or os.environ.get("DEV_EDITION_API_KEY")
         self.timeout_seconds = timeout_seconds
 
@@ -285,7 +286,8 @@ class SemanticGuardrailClient:
     )
 
     def __init__(self, base_url: str | None = None, api_key: str | None = None, timeout_seconds: float = 2.0) -> None:
-        self.base_url = (base_url or os.environ.get("PROTEGRITY_GUARDRAIL_URL") or "").rstrip("/")
+        configured_url = os.environ.get("PROTEGRITY_GUARDRAIL_URL") if base_url is None else base_url
+        self.base_url = (configured_url or "").rstrip("/")
         self.api_key = api_key or os.environ.get("DEV_EDITION_API_KEY")
         self.timeout_seconds = timeout_seconds
 
@@ -301,14 +303,16 @@ class SemanticGuardrailClient:
         return True, 0.05, "Allowed by local guardrail policy."
 
     def _assess_remote(self, text: str, context: dict[str, Any] | None = None) -> tuple[bool, float, str]:
+        processor = str((context or {}).get("guardrail_processor") or "customer-support")
+        output = processor == "pii"
         body = json.dumps(
             {
                 "messages": [
                     {
-                        "from": "user",
-                        "to": "ai",
+                        "from": "ai" if output else "user",
+                        "to": "user" if output else "ai",
                         "content": text,
-                        "processors": ["customer-support"],
+                        "processors": [processor],
                     }
                 ]
             }
@@ -326,6 +330,13 @@ class SemanticGuardrailClient:
             processors = messages[0].get("processors", []) if messages and isinstance(messages[0], dict) else []
             explanation = processors[0].get("explanation") if processors and isinstance(processors[0], dict) else None
             reason = str(explanation or outcome or "Assessed by Protegrity Semantic Guardrails.")
+            # Developer Edition's semantic model is trained for customer-service
+            # conversations. Engineering prompts are commonly classified as
+            # off-topic, which is not itself a security violation. Explicitly
+            # allow that classification while still blocking malicious input and
+            # every rejected PII output.
+            if not output and outcome == "rejected" and reason.strip().lower() == "offtopic":
+                allowed = True
             return allowed, risk_score, reason
         allowed = bool(payload.get("allowed", payload.get("allow", not payload.get("blocked", False))))
         risk_score = float(payload.get("risk_score", payload.get("riskScore", 0.0)))
@@ -368,7 +379,7 @@ class LoreProtectionGateway:
         return self._protect_value(data, context or {}, output=True)
 
     def protect_text(self, text: str, context: dict[str, Any] | None = None, output: bool = False) -> ProtectionResult:
-        context = context or {}
+        context = {**(context or {}), "guardrail_processor": "pii" if output else "customer-support"}
         trace_id = self._trace_id(context)
         boundary = str(context.get("boundary", "unknown"))
         if boundary in {"pre_llm", "demo_attack"} or output:
@@ -472,10 +483,10 @@ class LoreProtectionGateway:
 
     def _discover(self, text: str, context: dict[str, Any]) -> list[SensitiveFinding]:
         trace_id = self._trace_id(context)
-        findings: list[SensitiveFinding] = []
+        remote_findings: list[SensitiveFinding] = []
         if self.discovery_client.configured:
             try:
-                findings = self.discovery_client.classify_text(text)
+                remote_findings = self.discovery_client.classify_text(text)
             except (OSError, URLError, TimeoutError, ValueError, json.JSONDecodeError) as exc:
                 self.telemetry.emit(
                     EventType.PROTECTION_FAILED,
@@ -483,9 +494,21 @@ class LoreProtectionGateway:
                     policy_result="fallback",
                     metadata={"boundary": context.get("boundary"), "error_type": type(exc).__name__},
                 )
-        if not findings:
-            findings = self.fallback_engine.discover(text)
-        return findings
+        # Protegrity remains the primary classifier. Deterministic patterns close
+        # gaps for secrets and repository-specific identifiers that are outside
+        # the classifier's documented PII/PCI/PHI focus.
+        candidates = remote_findings + self.fallback_engine.discover(text)
+        selected: list[SensitiveFinding] = []
+        for finding in sorted(
+            candidates,
+            key=lambda item: (item.start, -(item.end - item.start), -item.confidence),
+        ):
+            if not (0 <= finding.start < finding.end <= len(text)):
+                continue
+            if any(finding.start < existing.end and finding.end > existing.start for existing in selected):
+                continue
+            selected.append(finding)
+        return sorted(selected, key=lambda item: item.start)
 
     def _trace_id(self, context: dict[str, Any] | None = None) -> str:
         return str((context or {}).get("trace_id") or new_trace_id())

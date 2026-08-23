@@ -6,7 +6,7 @@ from fastapi import FastAPI, Request, HTTPException, Header
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
-from config import GITHUB_MEMORY_REPOSITORY, GITHUB_OWNER, WEBHOOK_SECRET, PORT
+from config import DASHBOARD_ORIGINS, GITHUB_MEMORY_REPOSITORY, GITHUB_OWNER, WEBHOOK_SECRET, PORT
 from core.protection import ProtectionBlocked, get_default_protection_gateway
 from core.telemetry import (
     EventType,
@@ -41,7 +41,7 @@ app = FastAPI(
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000", "http://127.0.0.1:3000"],
+    allow_origins=DASHBOARD_ORIGINS,
     allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],

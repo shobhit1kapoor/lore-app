@@ -3,12 +3,15 @@ import sys
 from types import SimpleNamespace
 from unittest.mock import Mock
 
+import httpx
+
 os.environ.setdefault("GITLAB_TOKEN", "test-token")
 os.environ.setdefault("GITLAB_PROJECT_ID", "1")
 os.environ.setdefault("ANTHROPIC_API_KEY", "test-key")
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
 from core.llm_gateway import LLMGateway
+from core.protection import NoOpProtectionGateway
 from core.telemetry import EventType, TelemetryRecorder, new_trace_id
 
 
@@ -36,7 +39,12 @@ def test_llm_gateway_uses_client_and_emits_events():
     recorder = TelemetryRecorder(sink)
     trace_id = new_trace_id()
     client = FakeClient()
-    gateway = LLMGateway(telemetry=recorder, trace_id=trace_id, client=client)
+    gateway = LLMGateway(
+        telemetry=recorder,
+        protection_gateway=NoOpProtectionGateway(),
+        trace_id=trace_id,
+        client=client,
+    )
 
     result = gateway.call(
         "system",
@@ -68,8 +76,33 @@ def test_llm_gateway_supports_openai_compatible_responses(monkeypatch):
     client = Mock()
     client.post.return_value = response
 
-    gateway = LLMGateway(client=client)
+    gateway = LLMGateway(protection_gateway=NoOpProtectionGateway(), client=client)
     gateway._provider = "openai_compatible"
 
     assert gateway.call("system", "user") == "ready"
     assert client.post.call_args.kwargs["json"]["model"] == "openai/gpt-oss-120b"
+
+
+def test_llm_gateway_retries_configured_fallback_model_on_404(monkeypatch):
+    import core.llm_gateway as gateway_module
+
+    monkeypatch.setattr(gateway_module, "AI_BASE_URL", "https://example.test/v1")
+    monkeypatch.setattr(gateway_module, "AI_API_KEY", "test-key")
+    monkeypatch.setattr(gateway_module, "LLM_MODEL", "primary/model")
+    monkeypatch.setattr(gateway_module, "AI_FALLBACK_MODEL", "fallback/model")
+    missing = httpx.Response(404, request=httpx.Request("POST", "https://example.test/v1/chat/completions"))
+    available = httpx.Response(
+        200,
+        request=httpx.Request("POST", "https://example.test/v1/chat/completions"),
+        json={"choices": [{"message": {"content": "ready"}}]},
+    )
+    client = Mock()
+    client.post.side_effect = [missing, available]
+    gateway = LLMGateway(protection_gateway=NoOpProtectionGateway(), client=client)
+    gateway._provider = "openai_compatible"
+
+    assert gateway.call("system", "user") == "ready"
+    assert [call.kwargs["json"]["model"] for call in client.post.call_args_list] == [
+        "primary/model",
+        "fallback/model",
+    ]
