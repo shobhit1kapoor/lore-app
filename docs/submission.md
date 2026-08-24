@@ -2,7 +2,7 @@
 
 ## GitHub repository
 
-https://github.com/kris70lesgo/lore-app
+https://github.com/shobhit1kapoor/lore-app
 
 ## Architecture overview
 
