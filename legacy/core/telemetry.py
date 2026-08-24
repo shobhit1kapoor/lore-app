@@ -13,8 +13,10 @@ from enum import Enum
 import json
 import os
 from pathlib import Path
+from threading import Lock
 import uuid
 from typing import Any
+import hashlib
 
 
 class EventType(str, Enum):
@@ -33,6 +35,9 @@ class EventType(str, Enum):
     DATA_MASKED = "DATA_MASKED"
     DATA_TOKENIZED = "DATA_TOKENIZED"
     PROTECTION_FAILED = "PROTECTION_FAILED"
+    PROTECTION_APPLIED = "PROTECTION_APPLIED"
+    DESTINATION_SCANNED = "DESTINATION_SCANNED"
+    SYSTEM_PROMPT_VERIFIED = "SYSTEM_PROMPT_VERIFIED"
     UNPROTECT_REQUESTED = "UNPROTECT_REQUESTED"
     UNPROTECT_ALLOWED = "UNPROTECT_ALLOWED"
     UNPROTECT_DENIED = "UNPROTECT_DENIED"
@@ -105,6 +110,8 @@ class TelemetryEvent:
     risk_score: float | None = None
     latency_ms: int | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
+    previous_hash: str | None = None
+    event_hash: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         data = asdict(self)
@@ -121,11 +128,28 @@ class JSONLTelemetrySink:
     def __init__(self, path: str | Path | None = None) -> None:
         default_path = Path(__file__).resolve().parent.parent / "logs" / "lore_events.jsonl"
         self.path = Path(path or os.environ.get("LORE_TELEMETRY_PATH", default_path))
+        self._lock = Lock()
 
     def emit(self, event: TelemetryEvent) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        with self.path.open("a", encoding="utf-8") as fh:
-            fh.write(event.to_json() + "\n")
+        with self._lock:
+            previous_hash = "0" * 64
+            if self.path.exists():
+                lines = self.path.read_text(encoding="utf-8", errors="ignore").splitlines()
+                last_line = lines[-1].strip() if lines else ""
+                if last_line:
+                    try:
+                        previous_hash = str(json.loads(last_line).get("event_hash") or previous_hash)
+                    except json.JSONDecodeError:
+                        pass
+            event.previous_hash = previous_hash
+            payload = event.to_dict()
+            payload.pop("event_hash", None)
+            event.event_hash = hashlib.sha256(
+                json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+            ).hexdigest()
+            with self.path.open("a", encoding="utf-8") as fh:
+                fh.write(event.to_json() + "\n")
 
 
 class TelemetryRecorder:
@@ -181,6 +205,30 @@ def read_events(path: str | Path | None = None, limit: int | None = None) -> lis
     if limit is not None and limit > 0:
         return events[-limit:]
     return events
+
+
+def verify_event_chain(path: str | Path | None = None) -> dict[str, Any]:
+    """Verify the cryptographic chain for all newly hash-chained evidence events."""
+    previous_hash = "0" * 64
+    checked = 0
+    for event in read_events(path):
+        event_hash = event.get("event_hash")
+        if not event_hash:
+            continue
+        if checked == 0:
+            previous_hash = str(event.get("previous_hash") or previous_hash)
+        if event.get("previous_hash") != previous_hash:
+            return {"valid": False, "checked_events": checked, "broken_event_id": event.get("event_id")}
+        payload = dict(event)
+        payload.pop("event_hash", None)
+        expected = hashlib.sha256(
+            json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        ).hexdigest()
+        if expected != event_hash:
+            return {"valid": False, "checked_events": checked, "broken_event_id": event.get("event_id")}
+        previous_hash = str(event_hash)
+        checked += 1
+    return {"valid": True, "checked_events": checked, "broken_event_id": None}
 
 
 def list_traces(limit: int = 50, path: str | Path | None = None) -> list[dict[str, Any]]:
@@ -263,4 +311,5 @@ def security_overview(path: str | Path | None = None) -> dict[str, Any]:
         "event_counts": counts,
         "category_counts": categories,
         "recent_traces": traces[:10],
+        "evidence_chain": verify_event_chain(path),
     }

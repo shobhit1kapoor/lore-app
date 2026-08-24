@@ -7,7 +7,7 @@ export default function ProtectionPage() {
       <div className="space-y-6">
         <div>
           <h1 className="text-2xl font-semibold text-ink">Protection Lab</h1>
-          <p className="mt-1 text-sm text-zinc-400">Run data discovery, tokenization, and masking against text before it reaches the AI model or memory.</p>
+          <p className="mt-1 max-w-3xl text-sm text-zinc-400">Run the real isolated Protegrity boundary: Data Discovery, full canonical protection, pseudonymization, post-protection rescan, and a hash-chained receipt before memory or model access.</p>
         </div>
         <ProtectionDemo />
       </div>

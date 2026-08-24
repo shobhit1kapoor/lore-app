@@ -7,7 +7,7 @@ export default function AttackLabPage() {
       <div className="space-y-6">
         <div>
           <h1 className="text-2xl font-semibold text-ink">Attack Lab</h1>
-          <p className="mt-1 text-sm text-zinc-400">Probe guardrails with prompt-injection and memory-exfiltration attempts.</p>
+          <p className="mt-1 max-w-3xl text-sm text-zinc-400">Run prompt injection, memory exfiltration, encoded leakage, tool abuse, cross-project retrieval, malicious-MR, and log-injection probes. Every result links to its evidence receipt.</p>
         </div>
         <AttackLabClient />
       </div>

@@ -5,7 +5,7 @@ import uuid
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
-from core.telemetry import EventType, JSONLTelemetrySink, TelemetryRecorder, new_trace_id
+from core.telemetry import EventType, JSONLTelemetrySink, TelemetryRecorder, new_trace_id, verify_event_chain
 
 
 def test_telemetry_event_creation_and_trace_propagation(tmp_path):
@@ -49,3 +49,21 @@ def test_telemetry_redacts_sensitive_metadata(tmp_path):
     assert row["metadata"]["diff"] == "[redacted]"
     assert row["metadata"]["api_key"] == "[redacted]"
     assert row["metadata"]["safe_count"] == 2
+
+
+def test_telemetry_events_form_a_verifiable_hash_chain(tmp_path):
+    path = tmp_path / "events.jsonl"
+    recorder = TelemetryRecorder(JSONLTelemetrySink(path))
+    trace_id = new_trace_id()
+
+    recorder.emit(EventType.AGENT_STARTED, trace_id, metadata={"stage": "authorize"})
+    recorder.emit(EventType.PROTECTION_APPLIED, trace_id, metadata={"stage": "protect"})
+
+    rows = [json.loads(line) for line in path.read_text().splitlines()]
+    assert rows[0]["previous_hash"] == "0" * 64
+    assert rows[1]["previous_hash"] == rows[0]["event_hash"]
+    assert verify_event_chain(path) == {"valid": True, "checked_events": 2, "broken_event_id": None}
+
+    rows[0]["metadata"]["stage"] = "tampered"
+    path.write_text("\n".join(json.dumps(row) for row in rows) + "\n")
+    assert verify_event_chain(path)["valid"] is False

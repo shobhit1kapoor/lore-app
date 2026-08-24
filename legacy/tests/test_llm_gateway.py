@@ -56,12 +56,20 @@ def test_llm_gateway_uses_client_and_emits_events():
     assert result == '{"ok": true}'
     assert client.messages.kwargs["messages"] == [{"role": "user", "content": "user"}]
     assert [event["event_type"] for event in sink.events] == [
+        EventType.SYSTEM_PROMPT_VERIFIED.value,
         EventType.LLM_CALLED.value,
+        EventType.DESTINATION_SCANNED.value,
         EventType.LLM_COMPLETED.value,
     ]
     assert {event["trace_id"] for event in sink.events} == {trace_id}
-    assert sink.events[0]["metadata"]["user_message_chars"] == 4
-    assert "user" not in sink.events[0]["metadata"]
+    assert len(sink.events[0]["metadata"]["protected_system_sha256"]) == 64
+    assert sink.events[1]["metadata"]["user_message_chars"] == 4
+    assert "user" not in sink.events[1]["metadata"]
+    destination_scan = sink.events[2]
+    assert destination_scan["policy_result"] == "protected"
+    assert len(destination_scan["metadata"]["provider_payload_sha256"]) == 64
+    assert destination_scan["metadata"]["provider_payload_bytes"] > 0
+    assert destination_scan["metadata"]["released_raw_matches_count"] == 0
 
 
 def test_llm_gateway_supports_openai_compatible_responses(monkeypatch):

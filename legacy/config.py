@@ -11,6 +11,8 @@ AI_BASE_URL = os.getenv("AI_BASE_URL")
 AI_API_KEY = os.getenv("AI_API_KEY")
 AI_MODEL = os.getenv("AI_MODEL")
 AI_FALLBACK_MODEL = os.getenv("AI_FALLBACK_MODEL")
+PROTEGRITY_PRIVACY_GATEWAY_URL = os.getenv("PROTEGRITY_PRIVACY_GATEWAY_URL")
+PROTEGRITY_FAIL_CLOSED = os.getenv("PROTEGRITY_FAIL_CLOSED", "true").strip().lower() not in {"0", "false", "no"}
 GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")
 GITHUB_OWNER = os.getenv("GITHUB_OWNER")
 GITHUB_MEMORY_REPOSITORY = os.getenv("GITHUB_MEMORY_REPOSITORY")
@@ -21,7 +23,7 @@ DASHBOARD_ORIGINS = [
     origin.strip()
     for origin in os.getenv(
         "DASHBOARD_ORIGINS",
-        "http://localhost:3000,http://127.0.0.1:3000",
+        "http://localhost:3000,http://127.0.0.1:3000,http://localhost:3001,http://127.0.0.1:3001",
     ).split(",")
     if origin.strip()
 ]

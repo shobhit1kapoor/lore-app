@@ -62,6 +62,9 @@ class ProtectionResult:
     risk_score: float = 0.0
     policy_result: str = "allowed"
     reason: str | None = None
+    provider: str = "local"
+    fingerprint: str | None = None
+    entity_counts: dict[str, int] | None = None
 
     @property
     def categories(self) -> list[str]:
@@ -78,6 +81,9 @@ class ProtectionResult:
             "risk_score": self.risk_score,
             "policy_result": self.policy_result,
             "reason": self.reason,
+            "provider": self.provider,
+            "fingerprint": self.fingerprint,
+            "entity_counts": self.entity_counts or {},
         }
 
 
@@ -104,6 +110,11 @@ class FallbackSensitiveDataEngine:
         ("EMAIL", re.compile(r"\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b", re.I), "tokenize"),
         ("PHONE", re.compile(r"\b(?:\+?\d[\d .-]{7,}\d)\b"), "tokenize"),
         ("IP_ADDRESS", re.compile(r"\b(?:\d{1,3}\.){3}\d{1,3}\b"), "tokenize"),
+        (
+            "ACCOUNT_ID",
+            re.compile(r"\b((?:ACCT|CUST|CUSTOMER|TENANT)-[A-Z0-9-]{4,})\b", re.I),
+            "tokenize",
+        ),
         (
             "ACCOUNT_ID",
             re.compile(r"\b(?:account|acct|customer|tenant)[ _-]?(?:id|number|no)?[:=# ]+([A-Z0-9-]{5,})\b", re.I),
@@ -344,6 +355,78 @@ class SemanticGuardrailClient:
         return allowed, risk_score, reason
 
 
+class ProtegrityPrivacyGatewayClient:
+    """Client for LORE's isolated, credential-bearing Privacy Gateway."""
+
+    def __init__(self, base_url: str | None = None, timeout_seconds: float = 30.0) -> None:
+        configured_url = os.environ.get("PROTEGRITY_PRIVACY_GATEWAY_URL") if base_url is None else base_url
+        self.base_url = (configured_url or "").rstrip("/")
+        self.timeout_seconds = timeout_seconds
+
+    @property
+    def configured(self) -> bool:
+        return bool(self.base_url)
+
+    def health(self) -> dict[str, Any]:
+        req = request.Request(f"{self.base_url}/health", method="GET")
+        with request.urlopen(req, timeout=self.timeout_seconds) as response:
+            return json.loads(response.read().decode("utf-8"))
+
+    def protect_text(self, text: str, trace_id: str, purpose: str) -> ProtectionResult:
+        gateway_trace_id = trace_id if 8 <= len(trace_id) <= 100 else hashlib.sha256(trace_id.encode()).hexdigest()[:32]
+        body = json.dumps({"text": text, "traceId": gateway_trace_id, "purpose": purpose}).encode("utf-8")
+        req = request.Request(
+            f"{self.base_url}/v1/protect",
+            data=body,
+            headers={"content-type": "application/json"},
+            method="POST",
+        )
+        with request.urlopen(req, timeout=self.timeout_seconds) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+        findings = [
+            SensitiveFinding(
+                category=str(item["category"]),
+                start=int(item["start"]),
+                end=int(item["end"]),
+                confidence=float(item.get("confidence", 0.9)),
+                action=str(item.get("action", "tokenize")),
+            )
+            for item in payload.get("findings", [])
+            if isinstance(item, dict)
+        ]
+        return ProtectionResult(
+            text=str(payload["aiSafeText"]),
+            findings=findings,
+            tokenized_count=sum(finding.action == "tokenize" for finding in findings),
+            masked_count=sum(finding.action == "mask" for finding in findings),
+            policy_result="protected",
+            reason=f"Protected by {payload.get('provider', 'Protegrity')} Privacy Gateway.",
+            provider=str(payload.get("provider", "protegrity")),
+            fingerprint=str(payload.get("fingerprint") or ""),
+            entity_counts={str(key): int(value) for key, value in (payload.get("entityCounts") or {}).items()},
+        )
+
+    def assess(self, text: str, trace_id: str, purpose: str, output: bool = False) -> tuple[bool, float, str]:
+        gateway_trace_id = trace_id if 8 <= len(trace_id) <= 100 else hashlib.sha256(trace_id.encode()).hexdigest()[:32]
+        body = json.dumps(
+            {
+                "text": text,
+                "traceId": gateway_trace_id,
+                "purpose": purpose,
+                "direction": "output" if output else "input",
+            }
+        ).encode("utf-8")
+        req = request.Request(
+            f"{self.base_url}/v1/guardrail",
+            data=body,
+            headers={"content-type": "application/json"},
+            method="POST",
+        )
+        with request.urlopen(req, timeout=self.timeout_seconds) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+        return bool(payload["allowed"]), float(payload.get("riskScore", 0.0)), str(payload.get("reason") or "Assessed by Protegrity.")
+
+
 class LoreProtectionGateway:
     """LORE protection boundary used by agents, memory, LLM calls, and demo APIs."""
 
@@ -352,12 +435,20 @@ class LoreProtectionGateway:
         telemetry: TelemetryRecorder | None = None,
         discovery_client: ProtegrityDiscoveryClient | None = None,
         guardrail_client: SemanticGuardrailClient | None = None,
+        privacy_client: ProtegrityPrivacyGatewayClient | None = None,
         fallback_engine: FallbackSensitiveDataEngine | None = None,
+        fail_closed: bool | None = None,
     ) -> None:
         self.telemetry = telemetry or get_default_recorder()
         self.discovery_client = discovery_client or ProtegrityDiscoveryClient()
         self.guardrail_client = guardrail_client or SemanticGuardrailClient()
+        self.privacy_client = privacy_client or ProtegrityPrivacyGatewayClient()
         self.fallback_engine = fallback_engine or FallbackSensitiveDataEngine()
+        self.fail_closed = (
+            os.environ.get("PROTEGRITY_FAIL_CLOSED", "true").strip().lower() not in {"0", "false", "no"}
+            if fail_closed is None
+            else fail_closed
+        )
 
     def inspect(self, data: Any, context: dict[str, Any] | None = None) -> Any:
         return self.protect(data, context)
@@ -382,8 +473,49 @@ class LoreProtectionGateway:
         context = {**(context or {}), "guardrail_processor": "pii" if output else "customer-support"}
         trace_id = self._trace_id(context)
         boundary = str(context.get("boundary", "unknown"))
-        if boundary in {"pre_llm", "demo_attack"} or output:
-            allowed, risk_score, reason = self.guardrail_client.assess(text, context)
+        if self.privacy_client.configured:
+            try:
+                result = self.privacy_client.protect_text(text, trace_id, boundary)
+            except (OSError, URLError, TimeoutError, ValueError, KeyError, json.JSONDecodeError) as exc:
+                self.telemetry.emit(
+                    EventType.PROTECTION_FAILED,
+                    trace_id,
+                    policy_result="blocked",
+                    metadata={"boundary": boundary, "error_type": type(exc).__name__},
+                )
+                raise ProtectionBlocked("Protegrity protection failed closed.") from exc
+        else:
+            if self.fail_closed:
+                self.telemetry.emit(
+                    EventType.PROTECTION_FAILED,
+                    trace_id,
+                    policy_result="blocked",
+                    metadata={"boundary": boundary, "stage": "protection", "error_type": "GatewayNotConfigured"},
+                )
+                raise ProtectionBlocked("Protegrity Privacy Gateway is required but not configured.")
+            findings = self._discover(text, context)
+            result = self.fallback_engine.protect(text, findings)
+        findings = result.findings
+        should_guardrail = output or (
+            boundary in {"pre_llm", "demo_attack"} and context.get("prompt_part") != "system"
+        )
+        if should_guardrail:
+            guardrail_text = text if output else result.text
+            try:
+                if self.privacy_client.configured:
+                    allowed, risk_score, reason = self.privacy_client.assess(guardrail_text, trace_id, boundary, output=output)
+                elif self.fail_closed:
+                    raise ProtectionBlocked("Protegrity Privacy Gateway is required but not configured.")
+                else:
+                    allowed, risk_score, reason = self.guardrail_client.assess(guardrail_text, context)
+            except (OSError, URLError, TimeoutError, ValueError, KeyError, json.JSONDecodeError) as exc:
+                self.telemetry.emit(
+                    EventType.PROTECTION_FAILED,
+                    trace_id,
+                    policy_result="blocked",
+                    metadata={"boundary": boundary, "stage": "semantic_guardrail", "error_type": type(exc).__name__},
+                )
+                raise ProtectionBlocked("Protegrity Semantic Guardrails failed closed.") from exc
             if not allowed:
                 event_type = EventType.OUTPUT_BLOCKED if output else EventType.PROMPT_BLOCKED
                 self.telemetry.emit(
@@ -391,12 +523,14 @@ class LoreProtectionGateway:
                     trace_id,
                     policy_result="blocked",
                     risk_score=risk_score,
-                    metadata={"boundary": boundary, "reason": reason, "input_chars": len(text)},
+                    metadata={
+                        "boundary": boundary,
+                        "message_role": context.get("prompt_part"),
+                        "reason": reason,
+                        "input_chars": len(text),
+                    },
                 )
                 raise ProtectionBlocked(reason)
-
-        findings = self._discover(text, context)
-        result = self.fallback_engine.protect(text, findings)
         if findings:
             categories = result.categories
             self.telemetry.emit(
@@ -429,12 +563,42 @@ class LoreProtectionGateway:
                     policy_result="applied",
                     metadata={"boundary": boundary, "masked_count": result.masked_count},
                 )
+        self.telemetry.emit(
+            EventType.PROTECTION_APPLIED,
+            trace_id,
+            data_categories=result.categories,
+            protection_action="pseudonymize",
+            policy_result="protected",
+            metadata={
+                "boundary": boundary,
+                "provider": result.provider,
+                "finding_count": len(findings),
+                "input_chars": len(text),
+                "output_chars": len(result.text),
+                "fingerprint_sha256": result.fingerprint or hashlib.sha256(text.encode()).hexdigest(),
+            },
+        )
         return result
 
     def assess_prompt(self, text: str, context: dict[str, Any] | None = None) -> ProtectionResult:
         context = {"boundary": "demo_attack", **(context or {})}
         trace_id = self._trace_id(context)
-        allowed, risk_score, reason = self.guardrail_client.assess(text, context)
+        protected = self.protect_text(text, {**context, "boundary": "attack_protection"})
+        try:
+            if self.privacy_client.configured:
+                allowed, risk_score, reason = self.privacy_client.assess(protected.text, trace_id, str(context["boundary"]))
+            elif self.fail_closed:
+                raise ProtectionBlocked("Protegrity Privacy Gateway is required but not configured.")
+            else:
+                allowed, risk_score, reason = self.guardrail_client.assess(text, context)
+        except (OSError, URLError, TimeoutError, ValueError, KeyError, json.JSONDecodeError) as exc:
+            self.telemetry.emit(
+                EventType.PROTECTION_FAILED,
+                trace_id,
+                policy_result="blocked",
+                metadata={"boundary": context["boundary"], "stage": "semantic_guardrail", "error_type": type(exc).__name__},
+            )
+            raise ProtectionBlocked("Protegrity Semantic Guardrails failed closed.") from exc
         if not allowed:
             self.telemetry.emit(
                 EventType.PROMPT_BLOCKED,
@@ -450,8 +614,9 @@ class LoreProtectionGateway:
                 risk_score=risk_score,
                 policy_result="blocked",
                 reason=reason,
+                provider="protegrity" if self.privacy_client.configured else "local",
+                fingerprint=hashlib.sha256(text.encode()).hexdigest(),
             )
-        protected = self.protect_text(text, context)
         return ProtectionResult(
             text=protected.text,
             findings=protected.findings,
@@ -460,6 +625,9 @@ class LoreProtectionGateway:
             risk_score=risk_score,
             policy_result="allowed",
             reason=reason,
+            provider=protected.provider,
+            fingerprint=protected.fingerprint,
+            entity_counts=protected.entity_counts,
         )
 
     def _protect_value(self, data: Any, context: dict[str, Any], output: bool = False) -> Any:

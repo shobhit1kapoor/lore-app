@@ -11,6 +11,7 @@ import {
   Folder,
   Notification,
   Security,
+  MachineLearningModel,
   Task,
   User
 } from "@carbon/icons-react";
@@ -20,7 +21,7 @@ type DetailSection = {title: string; items: DetailItem[]};
 
 const sections: DetailSection[] = [
   {title: "Security overview", items: [{href: "/", label: "Overview", icon: Dashboard}, {href: "/traces", label: "Trace activity", icon: Analytics}, {href: "/protection", label: "Protection controls", icon: Security}]},
-  {title: "Operations", items: [{href: "/attack-lab", label: "Attack Lab", icon: Task}, {href: "/memory", label: "Protected Memory", icon: Folder}]}
+  {title: "Operations", items: [{href: "/ai-review", label: "Protected AI Review", icon: MachineLearningModel}, {href: "/attack-lab", label: "Attack Lab", icon: Task}, {href: "/memory", label: "Protected Memory", icon: Folder}]}
 ];
 
 function isCurrent(pathname: string, href: string) {

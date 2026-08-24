@@ -14,6 +14,8 @@ export type TelemetryEvent = {
   risk_score?: number | null;
   latency_ms?: number | null;
   metadata?: Record<string, unknown>;
+  previous_hash?: string | null;
+  event_hash?: string | null;
 };
 
 export type TraceSummary = {
@@ -38,6 +40,32 @@ export type Overview = {
   event_counts: Record<string, number>;
   category_counts: Record<string, number>;
   recent_traces: TraceSummary[];
+  evidence_chain: {valid: boolean; checked_events: number; broken_event_id?: string | null};
+};
+
+export type Readiness = {
+  ready: boolean;
+  protection_provider: string;
+  privacy_gateway_isolated: boolean;
+  fail_closed: boolean;
+  model_provider: string;
+  credentials_exposed_to_api: boolean;
+};
+
+export type AttackScenario = {
+  id: string;
+  title: string;
+  category: string;
+  boundary: string;
+  prompt: string;
+};
+
+export type AIReviewResponse = {
+  trace_id: string;
+  response: string;
+  model_provider: string;
+  protection_provider: string;
+  provider_payload_status: string;
 };
 
 export type ProtectionResponse = {
@@ -51,6 +79,11 @@ export type ProtectionResponse = {
   risk_score: number;
   policy_result: string;
   reason?: string | null;
+  provider?: string;
+  fingerprint?: string | null;
+  entity_counts?: Record<string, number>;
+  scenario_id?: string | null;
+  blocked_boundary?: string | null;
 };
 
 export type MemoryRecord = {

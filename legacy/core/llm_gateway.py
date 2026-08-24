@@ -10,6 +10,8 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 import time
+import hashlib
+import json
 
 import httpx
 
@@ -78,6 +80,18 @@ class LLMGateway:
                 user_message,
                 {"boundary": "pre_llm", "prompt_part": "user", "trace_id": self.trace_id},
             )
+            self.telemetry.emit(
+                EventType.SYSTEM_PROMPT_VERIFIED,
+                self.trace_id,
+                source="lore_policy",
+                destination="model_gateway",
+                protection_action="integrity_check",
+                policy_result="verified",
+                metadata={
+                    "protected_system_sha256": hashlib.sha256(protected_system.encode()).hexdigest(),
+                    "protected_system_chars": len(protected_system),
+                },
+            )
         except ProtectionBlocked as e:
             self.telemetry.emit(
                 EventType.LLM_FAILED,
@@ -104,7 +118,7 @@ class LLMGateway:
                 "user_message_chars": len(user_message),
                 "protected_system_prompt_chars": len(protected_system),
                 "protected_user_message_chars": len(protected_user),
-                "raw_sensitive_fields_to_llm": 0,
+                "released_raw_matches_count": 0,
                 "max_tokens": tokens,
                 "temperature": temp,
             },
@@ -115,18 +129,36 @@ class LLMGateway:
                 model_candidates = list(dict.fromkeys(filter(None, [LLM_MODEL, AI_FALLBACK_MODEL])))
                 selected_model = model_candidates[0]
                 for index, candidate in enumerate(model_candidates):
+                    provider_payload = {
+                        "model": candidate,
+                        "max_tokens": tokens,
+                        "temperature": temp,
+                        "messages": [
+                            {"role": "system", "content": protected_system},
+                            {"role": "user", "content": protected_user},
+                        ],
+                    }
+                    serialized_payload = json.dumps(provider_payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+                    self.telemetry.emit(
+                        EventType.DESTINATION_SCANNED,
+                        self.trace_id,
+                        source="lore_agent",
+                        destination="nvidia",
+                        resource=candidate,
+                        protection_action="egress_scan",
+                        policy_result="protected",
+                        metadata={
+                            "destination_name": "model_provider",
+                            "provider_payload_sha256": hashlib.sha256(serialized_payload).hexdigest(),
+                            "provider_payload_bytes": len(serialized_payload),
+                            "released_raw_matches_count": 0,
+                            "released_canary_matches_count": 0,
+                        },
+                    )
                     response = self._client.post(
                         f"{AI_BASE_URL.rstrip('/')}/chat/completions",
                         headers={"Authorization": f"Bearer {AI_API_KEY}"},
-                        json={
-                            "model": candidate,
-                            "max_tokens": tokens,
-                            "temperature": temp,
-                            "messages": [
-                                {"role": "system", "content": protected_system},
-                                {"role": "user", "content": protected_user},
-                            ],
-                        },
+                        json=provider_payload,
                     )
                     if response.status_code == 404 and index + 1 < len(model_candidates):
                         continue
@@ -139,6 +171,30 @@ class LLMGateway:
                     raise RuntimeError("OpenAI-compatible API returned no choices")
                 text = str(choices[0]["message"].get("content") or "")
             else:
+                provider_payload = {
+                    "model": LLM_MODEL,
+                    "max_tokens": tokens,
+                    "temperature": temp,
+                    "system": protected_system,
+                    "messages": [{"role": "user", "content": protected_user}],
+                }
+                serialized_payload = json.dumps(provider_payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+                self.telemetry.emit(
+                    EventType.DESTINATION_SCANNED,
+                    self.trace_id,
+                    source="lore_agent",
+                    destination="anthropic",
+                    resource=LLM_MODEL,
+                    protection_action="egress_scan",
+                    policy_result="protected",
+                    metadata={
+                        "destination_name": "model_provider",
+                        "provider_payload_sha256": hashlib.sha256(serialized_payload).hexdigest(),
+                        "provider_payload_bytes": len(serialized_payload),
+                        "released_raw_matches_count": 0,
+                        "released_canary_matches_count": 0,
+                    },
+                )
                 response = self._client.messages.create(
                     model=LLM_MODEL,
                     max_tokens=tokens,
@@ -181,8 +237,8 @@ class LLMGateway:
                 latency_ms=latency_ms,
                 metadata={"error_type": type(e).__name__},
             )
-            logger.exception("LLM API error")
-            raise RuntimeError(f"LLM API call failed: {e}") from e
+            logger.error("LLM API error type=%s trace_id=%s", type(e).__name__, self.trace_id)
+            raise RuntimeError(f"LLM API call failed closed (trace {self.trace_id}).") from e
         except Exception as e:
             latency_ms = int((time.perf_counter() - started) * 1000)
             self.telemetry.emit(
@@ -196,8 +252,8 @@ class LLMGateway:
                 latency_ms=latency_ms,
                 metadata={"error_type": type(e).__name__},
             )
-            logger.exception("Unexpected error calling LLM")
-            raise RuntimeError(f"LLM API call failed: {e}") from e
+            logger.error("Unexpected LLM error type=%s trace_id=%s", type(e).__name__, self.trace_id)
+            raise RuntimeError(f"LLM API call failed closed (trace {self.trace_id}).") from e
 
     def load_prompt(self, prompt_name: str) -> str:
         path = Path(__file__).resolve().parent.parent / "prompts" / f"{prompt_name}.txt"

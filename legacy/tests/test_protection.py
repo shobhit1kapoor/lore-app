@@ -4,7 +4,14 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
 from core.models import MemoryRecord
-from core.protection import LoreProtectionGateway, NoOpProtectionGateway, ProtegrityDiscoveryClient, SemanticGuardrailClient
+from core.protection import (
+    LoreProtectionGateway,
+    NoOpProtectionGateway,
+    ProtegrityDiscoveryClient,
+    ProtegrityPrivacyGatewayClient,
+    ProtectionBlocked,
+    SemanticGuardrailClient,
+)
 from core.telemetry import EventType, JSONLTelemetrySink, TelemetryRecorder, read_events
 
 
@@ -24,6 +31,8 @@ def test_lore_protection_tokenizes_and_masks_sensitive_text(tmp_path):
         telemetry=recorder,
         discovery_client=ProtegrityDiscoveryClient(base_url=""),
         guardrail_client=SemanticGuardrailClient(base_url=""),
+        privacy_client=ProtegrityPrivacyGatewayClient(base_url=""),
+        fail_closed=False,
     )
 
     result = gateway.protect_text(
@@ -44,6 +53,7 @@ def test_lore_protection_tokenizes_and_masks_sensitive_text(tmp_path):
         EventType.SENSITIVE_DATA_DISCOVERED.value,
         EventType.DATA_TOKENIZED.value,
         EventType.DATA_MASKED.value,
+        EventType.PROTECTION_APPLIED.value,
     ]
     serialized_events = "\n".join(str(event) for event in events)
     assert "ada@example.com" not in serialized_events
@@ -56,6 +66,8 @@ def test_lore_protection_blocks_prompt_injection(tmp_path):
         telemetry=recorder,
         discovery_client=ProtegrityDiscoveryClient(base_url=""),
         guardrail_client=SemanticGuardrailClient(base_url=""),
+        privacy_client=ProtegrityPrivacyGatewayClient(base_url=""),
+        fail_closed=False,
     )
 
     result = gateway.assess_prompt(
@@ -121,6 +133,8 @@ def test_lore_protection_protects_memory_record_fields(tmp_path):
         telemetry=recorder,
         discovery_client=ProtegrityDiscoveryClient(base_url=""),
         guardrail_client=SemanticGuardrailClient(base_url=""),
+        privacy_client=ProtegrityPrivacyGatewayClient(base_url=""),
+        fail_closed=False,
     )
     record = MemoryRecord(
         id="001",
@@ -146,3 +160,25 @@ def test_lore_protection_protects_memory_record_fields(tmp_path):
     assert "super-secret-token" not in text
     assert "<EMAIL_TOKEN_" in text
     assert "[API_KEY_REDACTED]" in text
+
+
+def test_lore_protection_fails_closed_without_privacy_gateway(tmp_path):
+    recorder = TelemetryRecorder(JSONLTelemetrySink(tmp_path / "events.jsonl"))
+    gateway = LoreProtectionGateway(
+        telemetry=recorder,
+        discovery_client=ProtegrityDiscoveryClient(base_url=""),
+        guardrail_client=SemanticGuardrailClient(base_url=""),
+        privacy_client=ProtegrityPrivacyGatewayClient(base_url=""),
+        fail_closed=True,
+    )
+
+    try:
+        gateway.protect_text("Synthetic project decision", {"boundary": "pre_memory_write", "trace_id": "trace-closed"})
+    except ProtectionBlocked as exc:
+        assert "required" in str(exc).lower()
+    else:
+        raise AssertionError("Expected Protegrity failure to block the operation")
+
+    events = read_events(tmp_path / "events.jsonl")
+    assert events[-1]["event_type"] == EventType.PROTECTION_FAILED.value
+    assert events[-1]["policy_result"] == "blocked"
