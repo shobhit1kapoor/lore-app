@@ -108,9 +108,10 @@ def _alpha_pseudonym(value: str) -> str:
 
 
 def _safe_alias(category: str, digest: str) -> str:
-    value = int(digest[:4], 16) % (26 * 26)
-    label = f"{chr(65 + value // 26)}{chr(65 + value % 26)}"
-    return f"[ENTITY {label}]"
+    # Use a neutral numeric reference. Letter-pair aliases can accidentally
+    # resemble names or locations to a second discovery pass.
+    value = int(digest[:8], 16) % 10_000
+    return f"[REF-{value:04d}]"
 
 
 @lru_cache(maxsize=1)
@@ -297,18 +298,33 @@ def protect(request: ProtectRequest) -> ProtectResponse:
     findings = _discover(request.text)
     canonical, trace_key = _protect_full_text(request.text, request.trace_id)
     ai_safe = _ai_safe_text(request.text, findings, trace_key)
+    # Discovery models can surface a lower-confidence entity only after a
+    # higher-confidence span has been replaced. Protect those newly visible
+    # spans and rescan until the postcondition is clean; never release a
+    # partially protected view.
+    all_findings = list(findings)
+    remaining: list[Finding] = []
+    for _ in range(4):
+        remaining = _discover(ai_safe)
+        if not remaining:
+            break
+        protected_again = _ai_safe_text(ai_safe, remaining, trace_key)
+        if protected_again == ai_safe:
+            break
+        ai_safe = protected_again
+        all_findings.extend(remaining)
     remaining = _discover(ai_safe)
     if remaining:
         categories = ", ".join(sorted({finding.category for finding in remaining}))
         raise HTTPException(status_code=422, detail=f"Post-protection discovery found: {categories}")
     counts: dict[str, int] = {}
-    for finding in findings:
+    for finding in all_findings:
         counts[finding.category] = counts.get(finding.category, 0) + 1
     return ProtectResponse(
         canonicalProtected=canonical,
         aiSafeText=ai_safe,
         fingerprint=hashlib.sha256(request.text.encode()).hexdigest(),
-        findings=findings,
+        findings=all_findings,
         entityCounts=counts,
         provider="protegrity",
         durationMs=round((time.perf_counter() - started) * 1000),
