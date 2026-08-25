@@ -22,6 +22,8 @@ Detailed references:
 
 ## Demo video
 
-Add the final 10–15 minute video URL here after recording. The walkthrough should follow [demo-script.md](demo-script.md).
+[Watch or download the final 10:34 technical walkthrough](https://github.com/shobhit1kapoor/lore-app/releases/download/v1.0-hackathon-demo/Lore_Protegrity_Final_Demo.mp4).
+
+The video demonstrates the working Privacy Control Center, isolated Protegrity boundary, protected input operation, real Protegrity-to-NVIDIA inference, destination scanning, complete Protection Receipts, eight-scenario Attack Lab, protected organizational memory, credential isolation, and fail-closed live preflight. The release asset is 1920×1080 H.264 with stereo AAC narration and SHA-256 `a924f2c3c87f081c6adf86b7b85a0b8ea73c557376570f84fd914c06e6f58a03`.
 
 LORE uses synthetic data for evaluation and demonstration. It makes no compliance, certification, or production-readiness claim.
