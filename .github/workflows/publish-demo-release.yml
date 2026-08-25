@@ -1,0 +1,51 @@
+name: Publish hackathon demo release
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - .github/workflows/publish-demo-release.yml
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: publish-hackathon-demo
+  cancel-in-progress: false
+
+jobs:
+  publish-demo:
+    if: github.repository == 'kris70lesgo/lore-app'
+    runs-on: ubuntu-latest
+    env:
+      DEMO_FILE: Lore_Protegrity_Final_Demo.mp4
+      DEMO_SHA256: a924f2c3c87f081c6adf86b7b85a0b8ea73c557376570f84fd914c06e6f58a03
+      DEMO_SOURCE: https://github.com/shobhit1kapoor/lore-app/releases/download/v1.0-hackathon-demo/Lore_Protegrity_Final_Demo.mp4
+      RELEASE_TAG: v1.0-hackathon-demo
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Download verified demo artifact
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl --fail --location --retry 3 --output "$DEMO_FILE" "$DEMO_SOURCE"
+          printf '%s  %s\n' "$DEMO_SHA256" "$DEMO_FILE" | sha256sum --check --strict
+
+      - name: Publish release in the original repository
+        shell: bash
+        run: |
+          set -euo pipefail
+          if gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload "$RELEASE_TAG" "$DEMO_FILE#LORE Protegrity Demo — 10m34s" --clobber --repo "$GITHUB_REPOSITORY"
+            gh release edit "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" \
+              --title "LORE — Protegrity Developer Edition Demo" \
+              --notes "Final 10 minute 34 second technical walkthrough of LORE's working Protegrity-first AI pipeline. Demonstrates protected ingestion, pseudonymized organizational memory, real NVIDIA inference, output leak scanning, hash-chained protection receipts, Attack Lab defenses, and fail-closed verification. Synthetic data only."
+          else
+            gh release create "$RELEASE_TAG" "$DEMO_FILE#LORE Protegrity Demo — 10m34s" \
+              --repo "$GITHUB_REPOSITORY" \
+              --target main \
+              --title "LORE — Protegrity Developer Edition Demo" \
+              --notes "Final 10 minute 34 second technical walkthrough of LORE's working Protegrity-first AI pipeline. Demonstrates protected ingestion, pseudonymized organizational memory, real NVIDIA inference, output leak scanning, hash-chained protection receipts, Attack Lab defenses, and fail-closed verification. Synthetic data only."
+          fi
